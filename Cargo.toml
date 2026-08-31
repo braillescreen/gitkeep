@@ -17,7 +17,7 @@ crossterm = "0.29.0"
 dirs = "6.0.0"
 inquire = { version = "0.9.4", default-features = false, features = ["macros", "crossterm"] }
 octocrab = { version = "0.54.1", default-features = false, features = ["default-client", "rustls", "rustls-ring", "retry", "timeout", "jwt-rust-crypto"] }
-open = "5.4.1"
+open = "5.4.2"
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", features = ["rt", "macros"] }
 toml = "1.1.4"
