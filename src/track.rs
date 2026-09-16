@@ -8,9 +8,70 @@ use anyhow::{Result, bail};
 use octocrab::Octocrab;
 
 use crate::{
-	config::{Config, PinnedRepo},
+	config::{Config, PinnedRepo, TrackedUser},
+	gitlab,
 	utils::{confirm, plural},
 };
+
+/// What `add_gitlab` ended up adding, so the caller can decide what to sync.
+pub enum GitLabAddition {
+	/// A tracked namespace, as a host-qualified name (`host/path`).
+	Namespace(String),
+	/// A pinned project, as a host-qualified full name (`host/namespace/project`).
+	Project(String),
+	/// Nothing new (already tracked or pinned).
+	None,
+}
+
+/// Resolves a GitLab URL target to a group/user namespace (tracked) or a single project
+/// (pinned) and records it in the config.
+pub async fn add_gitlab(
+	host: &str,
+	path: &str,
+	forks: bool,
+	frozen: bool,
+	submodules: Option<bool>,
+) -> Result<GitLabAddition> {
+	let mut config = Config::load()?;
+	let client = gitlab::GitLabClient::new(host, config.gitlab_token(host))?;
+	match client.resolve_target(path).await? {
+		gitlab::Target::Namespace(full_path) => {
+			let display = format!("{host}/{full_path}");
+			let mut changed = config.add_user_on(Some(host), &full_path, forks, frozen, submodules);
+			let tracked =
+				TrackedUser { host: Some(host.to_string()), ..TrackedUser::with_options(&full_path, forks, frozen) };
+			// Auto-remove any individually-pinned projects now covered by the namespace.
+			for pin in config.remove_pins_covered(&tracked) {
+				println!("{pin} removed (now covered by {display}).");
+				changed = true;
+			}
+			if changed {
+				config.save()?;
+			}
+			Ok(GitLabAddition::Namespace(display))
+		}
+		gitlab::Target::Project(project) => {
+			let full_name = format!("{host}/{}", project.path_with_namespace);
+			if let Some(tracked) = config.track.iter().find(|u| u.covers(&full_name)) {
+				println!(
+					"{} is already fully tracked; {full_name} will be synced automatically.",
+					tracked.display_name()
+				);
+				return Ok(GitLabAddition::None);
+			}
+			if config.is_pinned(&full_name) {
+				println!("Already tracking {full_name}.");
+				return Ok(GitLabAddition::None);
+			}
+			// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
+			config.include_repo(&full_name);
+			config.pin_repo_with_options(&full_name, Some(project.id), submodules);
+			println!("Now tracking {full_name}.");
+			config.save()?;
+			Ok(GitLabAddition::Project(full_name))
+		}
+	}
+}
 
 pub fn add(users: &[String], forks: bool, frozen: bool, submodules: Option<bool>) -> Result<()> {
 	let mut config = Config::load()?;
@@ -100,6 +161,14 @@ pub async fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()>
 	let mut changed = false;
 	let archive_root = config.archive_dir()?;
 	for target in users {
+		// Accept both URL form and the host-qualified form shown by `gitkeep list`.
+		let target = &gitlab::parse_remote_url(target).map_or_else(|| target.clone(), |(h, p)| format!("{h}/{p}"));
+		if let Some((host, path)) = gitlab::split_host(target) {
+			if remove_gitlab(&mut config, &archive_root, host, path, target, delete_dir, yes)? {
+				changed = true;
+			}
+			continue;
+		}
 		if target.contains('/') {
 			if remove_repo(&mut config, &archive_root, target, delete_dir, yes).await? {
 				changed = true;
@@ -181,6 +250,53 @@ pub async fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()>
 		config.save()?;
 	}
 	Ok(())
+}
+
+/// Removes a host-qualified GitLab target: a tracked namespace if one matches, otherwise
+/// a pinned project. Returns whether the config changed.
+fn remove_gitlab(
+	config: &mut Config,
+	archive_root: &Path,
+	host: &str,
+	path: &str,
+	target: &str,
+	delete_dir: bool,
+	yes: bool,
+) -> Result<bool> {
+	let tracked = config
+		.track
+		.iter()
+		.find(|u| u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path))
+		.map(|u| u.name.clone());
+	if let Some(canonical) = tracked {
+		config.track.retain(|u| !(u.host.as_deref() == Some(host) && u.name.eq_ignore_ascii_case(path)));
+		println!("Stopped tracking {host}/{canonical}.");
+		let mut dir = archive_root.join(host);
+		dir.extend(canonical.split('/'));
+		if dir.exists() {
+			let should_delete =
+				if delete_dir || yes { true } else { confirm(&format!("Delete local archive for {target}?"), false)? };
+			if should_delete {
+				println!("Deleting {}...", dir.display());
+				fs::remove_dir_all(&dir)?;
+			}
+		}
+		return Ok(true);
+	}
+	if config.unpin_repo(target) {
+		println!("No longer tracking {target}.");
+		if delete_dir {
+			let mut dir = archive_root.to_path_buf();
+			dir.extend(target.split('/'));
+			if dir.exists() {
+				println!("Deleting {}...", dir.display());
+				fs::remove_dir_all(&dir)?;
+			}
+		}
+		return Ok(true);
+	}
+	println!("Not tracking '{target}'.");
+	Ok(false)
 }
 
 /// Handles `gitkeep remove user/repo`: unpins an individually tracked repo, or excludes a repo
@@ -298,7 +414,7 @@ fn format_list(config: &Config) -> String {
 				None => {}
 			}
 			let suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags.join(", ")) };
-			let _ = writeln!(out, "  {}{}", user.name, suffix);
+			let _ = writeln!(out, "  {}{}", user.display_name(), suffix);
 		}
 	}
 	if !config.pinned.is_empty() {
@@ -573,6 +689,14 @@ mod tests {
 		config.add_user("alice", false, false, None);
 		let out = format_list(&config);
 		assert!(!out.contains("Repos ("), "got: {out}");
+	}
+
+	#[test]
+	fn list_shows_host_qualified_gitlab_entries() {
+		let mut config = Config::default();
+		config.add_user_on(Some("gitlab.example.com"), "some-group", false, false, None);
+		let out = format_list(&config);
+		assert!(out.contains("gitlab.example.com/some-group"), "got: {out}");
 	}
 
 	#[test]

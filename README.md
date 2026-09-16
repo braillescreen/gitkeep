@@ -1,6 +1,6 @@
 # gitkeep
 
-A CLI tool for maintaining local archives of GitHub users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
+A CLI tool for maintaining local archives of GitHub and GitLab users and organizations. Point it at one or more accounts and it clones every repo, then keeps them up to date on subsequent runs.
 
 ## Download
 
@@ -51,6 +51,13 @@ Authenticate with a GitHub personal access token. Opens the token creation page 
 
 ### `add <TARGET>...`
 Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again. Several repos from one owner can be listed as `user/a,b,c`.
+
+GitLab targets are given as URLs: `gitkeep add https://gitlab.example.com/some-group` tracks a group (including subgroups), while `gitkeep add https://gitlab.example.com/some-group/project` adds just that one project. GitLab archives are stored under <host>/<namespace>/<project>`, and everywhere a GitLab repo is referenced (`skip`, `remove`, `list`) uses the same format. Public instances work without authentication; for private repos, add a personal access token to the config by hand:
+
+```toml
+[gitlab_tokens]
+"gitlab.example.com" = "glpat-..."
+```
 
 | Flag | Description |
 |------|-------------|
