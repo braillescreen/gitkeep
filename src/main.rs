@@ -49,11 +49,7 @@ async fn main() -> Result<()> {
 				let client = config.build_client()?;
 				let mut resolved = Vec::with_capacity(usernames.len());
 				for name in &usernames {
-					let canonical = sync::resolve_login(&client, name).await?;
-					if canonical != *name {
-						println!("Resolved '{name}' to '{canonical}'.");
-					}
-					resolved.push(canonical);
+					resolved.push(sync::resolve_login(&client, name).await?);
 				}
 				track::add(&resolved, forks, frozen, submodules_override)?;
 				if !no_sync {
