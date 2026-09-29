@@ -29,7 +29,10 @@ pub async fn run() -> Result<()> {
 	println!("Authenticated as {}.", user.login);
 	let mut config = Config::load()?;
 	config.token = Some(token);
-	config.add_user(&user.login, false, false, None);
+	let already_tracked = config.track.iter().any(|u| u.name.eq_ignore_ascii_case(&user.login));
+	if already_tracked || confirm(&format!("Track your own account ({})?", user.login), true)? {
+		config.add_user(&user.login, false, false, None);
+	}
 	config.save()?;
 	println!("Token saved to {}.", Config::path()?.display());
 	Ok(())

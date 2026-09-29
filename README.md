@@ -47,7 +47,7 @@ gitkeep list          # show what's tracked
 Configure the archive directory, whether to use SSH or HTTPS clone URLs, whether to clone submodules by default, and whether repos are cloned immediately when added. Re-run at any time to update settings; your token and tracked users are preserved.
 
 ### `login`
-Authenticate with a GitHub personal access token. Opens the token creation page in your browser, validates the token, and saves it to config. Also adds your own account to the tracked list automatically.
+Authenticate with a GitHub personal access token. Opens the token creation page in your browser, validates the token, and saves it to config. Also offers to add your own account to the tracked list (defaults to yes).
 
 ### `add <TARGET>...`
 Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo).
