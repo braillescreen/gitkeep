@@ -180,20 +180,27 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 /// since GitHub usernames aren't case-sensitive but directory lookups on most filesystems are).
 /// Used to spot a leftover archive for a user that was removed without `--delete`.
 fn find_orphaned_dir(archive_root: &Path, name: &str) -> Result<Option<PathBuf>> {
-	let direct = archive_root.join(name);
-	if direct.is_dir() {
-		return Ok(Some(direct));
-	}
 	if !archive_root.is_dir() {
 		return Ok(None);
 	}
+	// Scan instead of checking `archive_root.join(name)` directly: on case-insensitive filesystems that
+	// would succeed with the caller's casing rather than the directory's real name.
+	let mut fallback = None;
 	for entry in fs::read_dir(archive_root)? {
 		let entry = entry?;
-		if entry.file_type()?.is_dir() && entry.file_name().to_string_lossy().eq_ignore_ascii_case(name) {
+		if !entry.file_type()?.is_dir() {
+			continue;
+		}
+		let file_name = entry.file_name();
+		let file_name = file_name.to_string_lossy();
+		if file_name == name {
 			return Ok(Some(entry.path()));
 		}
+		if fallback.is_none() && file_name.eq_ignore_ascii_case(name) {
+			fallback = Some(entry.path());
+		}
 	}
-	Ok(None)
+	Ok(fallback)
 }
 
 fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
