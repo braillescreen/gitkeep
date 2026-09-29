@@ -1,10 +1,14 @@
-use std::{fmt::Write as _, fs, path::Path};
+use std::{
+	fmt::Write as _,
+	fs,
+	path::{Path, PathBuf},
+};
 
 use anyhow::{Result, bail};
 use octocrab::Octocrab;
 
 use crate::{
-	config::Config,
+	config::{Config, PinnedRepo},
 	utils::{confirm, plural},
 };
 
@@ -175,7 +179,7 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 /// Looks for a top-level directory under the archive root matching `name` (case-insensitively,
 /// since GitHub usernames aren't case-sensitive but directory lookups on most filesystems are).
 /// Used to spot a leftover archive for a user that was removed without `--delete`.
-fn find_orphaned_dir(archive_root: &Path, name: &str) -> Result<Option<std::path::PathBuf>> {
+fn find_orphaned_dir(archive_root: &Path, name: &str) -> Result<Option<PathBuf>> {
 	let direct = archive_root.join(name);
 	if direct.is_dir() {
 		return Ok(Some(direct));
@@ -217,7 +221,7 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 		}
 	}
 	if !config.pinned.is_empty() {
-		let mut sorted: Vec<&crate::config::PinnedRepo> = config.pinned.iter().collect();
+		let mut sorted: Vec<&PinnedRepo> = config.pinned.iter().collect();
 		sorted.sort_by(|a, b| a.full_name.cmp(&b.full_name));
 		if !out.is_empty() {
 			out.push('\n');
@@ -263,15 +267,18 @@ pub fn list() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::atomic::{AtomicU32, Ordering};
+	use std::{
+		env, process,
+		sync::atomic::{AtomicU32, Ordering},
+	};
 
 	use super::*;
 
 	/// Creates a fresh, empty scratch directory under the system temp dir for a single test.
-	fn temp_dir() -> std::path::PathBuf {
+	fn temp_dir() -> PathBuf {
 		static COUNTER: AtomicU32 = AtomicU32::new(0);
 		let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-		let dir = std::env::temp_dir().join(format!("gitkeep-track-test-{}-{n}", std::process::id()));
+		let dir = env::temp_dir().join(format!("gitkeep-track-test-{}-{n}", process::id()));
 		fs::create_dir_all(&dir).unwrap();
 		dir
 	}

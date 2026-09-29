@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::config::Config;
+use crate::{config::Config, utils::confirm};
 
 fn parse_repo_arg(s: &str) -> Result<(&str, &str)> {
 	let Some((user, rest)) = s.split_once('/') else {
@@ -104,7 +104,7 @@ pub fn prune(yes: bool) -> Result<()> {
 		for (name, _) in &to_delete {
 			println!("  {name}");
 		}
-		if !crate::utils::confirm(
+		if !confirm(
 			&format!("Delete {} local {}?", to_delete.len(), if to_delete.len() == 1 { "repo" } else { "repos" }),
 			false,
 		)? {

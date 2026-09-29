@@ -1,4 +1,4 @@
-#![warn(clippy::all, clippy::cargo, clippy::nursery, clippy::pedantic)]
+#![warn(clippy::all, clippy::cargo, clippy::nursery, clippy::pedantic, clippy::absolute_paths)]
 #![allow(clippy::multiple_crate_versions)]
 #![deny(warnings)]
 
@@ -15,7 +15,10 @@ mod sync;
 mod track;
 mod utils;
 
-use crate::cli::{Cli, Commands};
+use crate::{
+	cli::{Cli, Commands},
+	config::Config,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -32,7 +35,7 @@ async fn main() -> Result<()> {
 			} else {
 				None
 			};
-			let config = crate::config::Config::load()?;
+			let config = Config::load()?;
 			// --sync / --no-sync override the configured default in either direction;
 			// with neither flag passed, fall back to the config's `no_sync` default.
 			let no_sync = if sync {
