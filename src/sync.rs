@@ -99,7 +99,9 @@ impl RemoteRepo {
 			full_name: format!("{host}/{}", project.path_with_namespace),
 			rel_dir: format!("{host}/{}", project.path_with_namespace),
 			id: project.id,
-			pushed_at: project.last_activity_at,
+			// GitLab's `last_activity_at` updates at most once an hour, so using it to skip pulls could
+			// miss recent pushes. Leaving this unset makes every sync pull.
+			pushed_at: None,
 			fork: project.forked_from.is_some(),
 			clone_url: project.http_url_to_repo.clone(),
 			ssh_url: project.ssh_url_to_repo.clone(),
@@ -336,7 +338,6 @@ mod tests {
 		let project = gitlab::Project {
 			id: 7,
 			path_with_namespace: "grp/proj".to_string(),
-			last_activity_at: None,
 			http_url_to_repo: Some("https://gitlab.example.com/grp/proj.git".to_string()),
 			ssh_url_to_repo: Some("git@gitlab.example.com:grp/proj.git".to_string()),
 			forked_from: None,
@@ -345,6 +346,7 @@ mod tests {
 		assert_eq!(repo.full_name, "gitlab.example.com/grp/proj");
 		assert_eq!(repo.rel_dir, "gitlab.example.com/grp/proj");
 		assert!(!repo.fork);
+		assert!(repo.pushed_at.is_none(), "GitLab repos must always be pulled");
 		assert_eq!(clone_url(&repo, false).unwrap(), "https://gitlab.example.com/grp/proj.git");
 		assert_eq!(clone_url(&repo, true).unwrap(), "git@gitlab.example.com:grp/proj.git");
 	}

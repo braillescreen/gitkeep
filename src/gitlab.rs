@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
 use octocrab::{Octocrab, OctocrabBuilder};
 use serde::{Deserialize, de::DeserializeOwned};
 
@@ -8,7 +7,6 @@ use serde::{Deserialize, de::DeserializeOwned};
 pub struct Project {
 	pub id: u64,
 	pub path_with_namespace: String,
-	pub last_activity_at: Option<DateTime<Utc>>,
 	pub http_url_to_repo: Option<String>,
 	pub ssh_url_to_repo: Option<String>,
 	#[serde(default)]
@@ -128,7 +126,8 @@ impl GitLabClient {
 		let sep = if base.contains('?') { '&' } else { '?' };
 		let mut all = Vec::new();
 		for page in 1u32.. {
-			let batch: Vec<Project> = self.get(format!("{base}{sep}order_by=id&sort=asc&per_page=100&page={page}")).await?;
+			let batch: Vec<Project> =
+				self.get(format!("{base}{sep}order_by=id&sort=asc&per_page=100&page={page}")).await?;
 			let done = batch.len() < 100;
 			all.extend(batch);
 			if done {
