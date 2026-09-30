@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+- Added `gitkeep size` to show archive disk usage
+- `gitkeep login` now asks before tracking your own account
+- `gitkeep remove` now offers to delete leftover archive directories for users you no longer track
+- Cleaned up directories for users you only tracked individual repos from after removing their whole archive
+- Fixed leftover archive directories being shown with the wrong casing on case-insensitive filesystems
+- Removed the "Resolved x to y" message when adding users
+- Updated dependencies
+
 ## 0.2.0
 
 - A repo whose local checkout no longer matches what's on GitHub (deleted and recreated under the same name) is now automatically re-cloned instead of left stale
