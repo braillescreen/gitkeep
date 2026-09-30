@@ -112,7 +112,7 @@ impl GitLabClient {
 		if self.get_optional::<GroupInfo>(group).await?.is_some() {
 			self.fetch_paged(&format!("/api/v4/groups/{}/projects?include_subgroups=true", encode_path(path))).await
 		} else {
-			self.fetch_paged(&format!("/api/v4/users/{path}/projects?archived=false")).await
+			self.fetch_paged(&format!("/api/v4/users/{path}/projects")).await
 		}
 	}
 
@@ -123,11 +123,12 @@ impl GitLabClient {
 	}
 
 	/// Follows page-number pagination until a short page. Ordered by id so pages stay
-	/// stable if projects are created mid-listing. `base` must already contain a query.
+	/// stable if projects are created mid-listing.
 	async fn fetch_paged(&self, base: &str) -> Result<Vec<Project>> {
+		let sep = if base.contains('?') { '&' } else { '?' };
 		let mut all = Vec::new();
 		for page in 1u32.. {
-			let batch: Vec<Project> = self.get(format!("{base}&order_by=id&sort=asc&per_page=100&page={page}")).await?;
+			let batch: Vec<Project> = self.get(format!("{base}{sep}order_by=id&sort=asc&per_page=100&page={page}")).await?;
 			let done = batch.len() < 100;
 			all.extend(batch);
 			if done {
