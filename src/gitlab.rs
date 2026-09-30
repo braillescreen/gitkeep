@@ -58,8 +58,28 @@ impl GitLabClient {
 		Ok(Self { host: host.to_string(), client })
 	}
 
-	async fn get<T: DeserializeOwned>(&self, path: String) -> octocrab::Result<T> {
-		self.client.get(path, None::<&()>).await
+	async fn get<T: DeserializeOwned>(&self, path: String) -> Result<T> {
+		self.client.get(path, None::<&()>).await.map_err(|e| self.request_error(&e))
+	}
+
+	/// Like `get`, but a 404 is `Ok(None)` rather than an error, so callers can tell "doesn't
+	/// exist" apart from network or permission failures.
+	async fn get_optional<T: DeserializeOwned>(&self, path: String) -> Result<Option<T>> {
+		match self.client.get(path, None::<&()>).await {
+			Ok(v) => Ok(Some(v)),
+			Err(e) if status_of(&e) == Some(404) => Ok(None),
+			Err(e) => Err(self.request_error(&e)),
+		}
+	}
+
+	fn request_error(&self, e: &octocrab::Error) -> anyhow::Error {
+		let host = &self.host;
+		match status_of(e) {
+			Some(401 | 403) => anyhow!(
+				"{host} denied the request ({e}). For private projects, add a token under [gitlab_tokens] in the 				 config."
+			),
+			_ => anyhow!("Request to {host} failed: {e}"),
+		}
 	}
 
 	/// Resolves an `add` target path to either a whole namespace (group or user) to track
@@ -67,16 +87,17 @@ impl GitLabClient {
 	/// since a project path can never be a bare top-level name.
 	pub async fn resolve_target(&self, path: &str) -> Result<Target> {
 		if path.contains('/')
-			&& let Ok(p) = self.get::<Project>(format!("/api/v4/projects/{}", encode_path(path))).await
+			&& let Some(p) = self.get_optional::<Project>(format!("/api/v4/projects/{}", encode_path(path))).await?
 		{
 			return Ok(Target::Project(Box::new(p)));
 		}
-		if let Ok(g) = self.get::<GroupInfo>(format!("/api/v4/groups/{}?with_projects=false", encode_path(path))).await
+		if let Some(g) =
+			self.get_optional::<GroupInfo>(format!("/api/v4/groups/{}?with_projects=false", encode_path(path))).await?
 		{
 			return Ok(Target::Namespace(g.full_path));
 		}
 		if !path.contains('/') {
-			let users: Vec<UserInfo> = self.get(format!("/api/v4/users?username={path}")).await.unwrap_or_default();
+			let users: Vec<UserInfo> = self.get(format!("/api/v4/users?username={path}")).await?;
 			if let Some(u) = users.into_iter().next() {
 				return Ok(Target::Namespace(u.username));
 			}
@@ -88,7 +109,7 @@ impl GitLabClient {
 	/// tracked top-level group archives its whole tree.
 	pub async fn fetch_namespace_projects(&self, path: &str) -> Result<Vec<Project>> {
 		let group = format!("/api/v4/groups/{}?with_projects=false", encode_path(path));
-		if self.get::<GroupInfo>(group).await.is_ok() {
+		if self.get_optional::<GroupInfo>(group).await?.is_some() {
 			self.fetch_paged(&format!("/api/v4/groups/{}/projects?include_subgroups=true", encode_path(path))).await
 		} else {
 			self.fetch_paged(&format!("/api/v4/users/{path}/projects?archived=false")).await
@@ -96,9 +117,9 @@ impl GitLabClient {
 	}
 
 	pub async fn fetch_project(&self, path: &str) -> Result<Project> {
-		self.get(format!("/api/v4/projects/{}", encode_path(path)))
-			.await
-			.map_err(|_| anyhow!("Could not fetch {path} from {}", self.host))
+		self.get_optional(format!("/api/v4/projects/{}", encode_path(path)))
+			.await?
+			.ok_or_else(|| anyhow!("{path} does not exist on {}", self.host))
 	}
 
 	/// Follows page-number pagination until a short page. Ordered by id so pages stay
@@ -106,10 +127,7 @@ impl GitLabClient {
 	async fn fetch_paged(&self, base: &str) -> Result<Vec<Project>> {
 		let mut all = Vec::new();
 		for page in 1u32.. {
-			let batch: Vec<Project> = self
-				.get(format!("{base}&order_by=id&sort=asc&per_page=100&page={page}"))
-				.await
-				.map_err(|e| anyhow!("request to {} failed: {e}", self.host))?;
+			let batch: Vec<Project> = self.get(format!("{base}&order_by=id&sort=asc&per_page=100&page={page}")).await?;
 			let done = batch.len() < 100;
 			all.extend(batch);
 			if done {
@@ -117,6 +135,15 @@ impl GitLabClient {
 			}
 		}
 		Ok(all)
+	}
+}
+
+/// The HTTP status of a failed request, when GitLab's error body could be parsed (it usually can:
+/// GitLab and GitHub both answer with a JSON `message`).
+fn status_of(e: &octocrab::Error) -> Option<u16> {
+	match e {
+		octocrab::Error::GitHub { source, .. } => Some(source.status_code.as_u16()),
+		_ => None,
 	}
 }
 
