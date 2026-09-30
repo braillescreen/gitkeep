@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use crossterm::{
 	event::{self, Event, KeyCode, KeyEventKind},
 	style::Stylize,
@@ -9,6 +9,24 @@ use crossterm::{
 
 pub fn plural(n: usize, singular: &str, plural: &str) -> String {
 	if n == 1 { format!("1 {singular}") } else { format!("{n} {plural}") }
+}
+
+/// Expands `owner/a,b,c` into one `owner/name` target per repo (GitHub repo names can't contain
+/// commas). Other targets pass through unchanged.
+pub fn expand_targets(args: Vec<String>) -> Result<Vec<String>> {
+	let mut out = Vec::with_capacity(args.len());
+	for target in args {
+		let Some((owner, list)) = target.split_once('/').filter(|(_, rest)| rest.contains(',')) else {
+			out.push(target);
+			continue;
+		};
+		let names: Vec<&str> = list.split(',').map(str::trim).filter(|n| !n.is_empty()).collect();
+		if names.is_empty() {
+			bail!("'{target}' doesn't list any repos");
+		}
+		out.extend(names.into_iter().map(|name| format!("{owner}/{name}")));
+	}
+	Ok(out)
 }
 
 /// A single-key confirmation prompt that returns immediately on 'y', 'n', or Enter.
@@ -54,6 +72,31 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn args(list: &[&str]) -> Vec<String> {
+		list.iter().map(ToString::to_string).collect()
+	}
+
+	#[test]
+	fn expand_targets_passes_through_plain_targets() {
+		let input = args(&["alice", "bob/repo"]);
+		assert_eq!(expand_targets(input.clone()).unwrap(), input);
+	}
+
+	#[test]
+	fn expand_targets_expands_comma_list() {
+		assert_eq!(expand_targets(args(&["daisy/a,b,c"])).unwrap(), args(&["daisy/a", "daisy/b", "daisy/c"]));
+	}
+
+	#[test]
+	fn expand_targets_ignores_empty_entries() {
+		assert_eq!(expand_targets(args(&["daisy/a,,b,"])).unwrap(), args(&["daisy/a", "daisy/b"]));
+	}
+
+	#[test]
+	fn expand_targets_rejects_empty_list() {
+		assert!(expand_targets(args(&["daisy/,"])).is_err());
+	}
 
 	#[test]
 	fn plural_uses_singular_for_one() {

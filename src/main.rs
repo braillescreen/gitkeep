@@ -26,7 +26,8 @@ async fn main() -> Result<()> {
 		Commands::Init => init::run(),
 		Commands::Login => login::run().await,
 		Commands::Add { users, forks, frozen, submodules, no_submodules, no_sync, sync } => {
-			let (repos, usernames): (Vec<String>, Vec<String>) = users.into_iter().partition(|s| s.contains('/'));
+			let (repos, usernames): (Vec<String>, Vec<String>) =
+				utils::expand_targets(users)?.into_iter().partition(|s| s.contains('/'));
 			let submodules_override = if submodules {
 				Some(true)
 			} else if no_submodules {
@@ -75,7 +76,7 @@ async fn main() -> Result<()> {
 			}
 			Ok(())
 		}
-		Commands::Remove { users, delete, yes } => track::remove(&users, delete, yes).await,
+		Commands::Remove { users, delete, yes } => track::remove(&utils::expand_targets(users)?, delete, yes).await,
 		Commands::List => track::list(),
 		Commands::Size { format } => size::run(format),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {

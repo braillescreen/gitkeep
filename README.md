@@ -50,7 +50,7 @@ Configure the archive directory, whether to use SSH or HTTPS clone URLs, whether
 Authenticate with a GitHub personal access token. Opens the token creation page in your browser, validates the token, and saves it to config. Also offers to add your own account to the tracked list (defaults to yes).
 
 ### `add <TARGET>...`
-Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again.
+Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again. Several repos from one owner can be listed as `user/a,b,c`.
 
 | Flag | Description |
 |------|-------------|
@@ -86,7 +86,7 @@ Show the on-disk size of the archive, broken down per account.
 | `-s, --format <FORMAT>` | Unit format: `decimal` (kB/MB/GB, base 1000), `binary` (KiB/MiB/GiB, base 1024, default), or `raw` (exact byte count) |
 
 ### `remove <TARGET>...`  _(alias: `rm`)_
-Stop tracking one or more users, orgs, or repos. Accepts either a plain username/org or `user/repo`. A `user/repo` target can be an individually pinned repo or a single repo under a fully tracked account; the latter is left out of future syncs while the rest of the account keeps syncing (run `gitkeep add user/repo` to undo). Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
+Stop tracking one or more users, orgs, or repos. Accepts either a plain username/org or `user/repo`. A `user/repo` target can be an individually pinned repo or a single repo under a fully tracked account; the latter is left out of future syncs while the rest of the account keeps syncing (run `gitkeep add user/repo` to undo). Like `add`, it accepts `user/a,b,c` to name several repos from one owner. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
 
 | Flag | Description |
 |------|-------------|
