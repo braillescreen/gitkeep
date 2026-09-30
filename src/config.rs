@@ -287,6 +287,11 @@ impl Config {
 		self.excluded.retain(|r| !r.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)));
 	}
 
+	/// Drops every exclusion that `tracked`'s sync would include, e.g. once that account is removed.
+	pub fn remove_exclusions_covered(&mut self, tracked: &TrackedUser) {
+		self.excluded.retain(|r| !tracked.covers(r));
+	}
+
 	/// Pins a repo, optionally recording its stable GitHub id (used to re-resolve it after a
 	/// rename) and a per-pin submodules override. Returns `true` if this is a new pin, `false`
 	/// if already pinned.
