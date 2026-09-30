@@ -74,9 +74,10 @@ impl GitLabClient {
 		let host = &self.host;
 		match status_of(e) {
 			Some(401 | 403) => anyhow!(
-				"{host} denied the request ({e}). For private projects, add a token under [gitlab_tokens] in the 				 config."
+				"{host} denied the request ({}). For private projects, add a token under [gitlab_tokens] in the config.",
+				describe(e)
 			),
-			_ => anyhow!("Request to {host} failed: {e}"),
+			_ => anyhow!("Request to {host} failed: {}", describe(e)),
 		}
 	}
 
@@ -144,6 +145,15 @@ fn status_of(e: &octocrab::Error) -> Option<u16> {
 	match e {
 		octocrab::Error::GitHub { source, .. } => Some(source.status_code.as_u16()),
 		_ => None,
+	}
+}
+
+/// A readable message for a failed request. octocrab displays HTTP errors as just "GitHub", so
+/// use the message from the response body instead.
+fn describe(e: &octocrab::Error) -> String {
+	match e {
+		octocrab::Error::GitHub { source, .. } => source.message.clone(),
+		other => other.to_string(),
 	}
 }
 
