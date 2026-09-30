@@ -31,29 +31,39 @@ pub fn add(users: &[String], forks: bool, frozen: bool, submodules: Option<bool>
 	Ok(())
 }
 
-/// Validates and pins individual repos (`user/repo` format). Returns the canonical names of
-/// newly-pinned repos so the caller can sync them.
-pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<bool>) -> Result<Vec<String>> {
+/// Result of `add_pinned`: repos that should be synced right away.
+#[derive(Default)]
+pub struct AddedRepos {
+	/// Canonical names of newly pinned repos.
+	pub pinned: Vec<String>,
+	/// Owners of previously removed repos that were added back under a fully tracked account.
+	pub restored_owners: Vec<String>,
+}
+
+/// Validates and pins individual repos (`user/repo` format). A repo under a fully tracked account
+/// that was previously removed is added back instead.
+pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<bool>) -> Result<AddedRepos> {
 	let mut config = Config::load()?;
-	let mut newly_pinned: Vec<String> = Vec::new();
+	let mut added = AddedRepos::default();
+	let mut changed = false;
 	for repo_str in repos {
-		let Some((user, name)) = repo_str.split_once('/') else {
-			bail!("'{repo_str}' is not in user/repo format");
-		};
-		if user.is_empty() || name.is_empty() || name.contains('/') {
-			bail!("'{repo_str}' is not in user/repo format");
-		}
-		if let Some(tracked) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)) {
-			println!("{} is already fully tracked; {name} will be synced automatically.", tracked.name);
+		let (user, name) = parse_repo_arg(repo_str)?;
+		if let Some(tracked) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map(|u| u.name.clone()) {
+			if let Some(restored) = config.include_repo(repo_str) {
+				println!("Now tracking {restored} again.");
+				changed = true;
+				if !added.restored_owners.contains(&tracked) {
+					added.restored_owners.push(tracked);
+				}
+			} else {
+				println!("{tracked} is already fully tracked; {name} will be synced automatically.");
+			}
 			continue;
 		}
 		// Case-insensitive duplicate-pin check (before hitting the API).
 		if let Some(existing) = config.pinned.iter().find(|p| p.full_name.eq_ignore_ascii_case(repo_str)) {
 			println!("Already tracking {}.", existing.full_name);
 			continue;
-		}
-		if config.skipped.iter().any(|s| s.eq_ignore_ascii_case(repo_str)) {
-			bail!("'{repo_str}' is currently skipped. Run 'gitkeep unskip {repo_str}' first.");
 		}
 		// Verify the repo exists on GitHub and get canonical casing.
 		let (full_name, id) = match client.repos(user, name).get().await {
@@ -65,44 +75,41 @@ pub async fn add_pinned(repos: &[String], client: &Octocrab, submodules: Option<
 			println!("Already tracking {full_name}.");
 			continue;
 		}
-		if config.skipped.iter().any(|s| s.eq_ignore_ascii_case(&full_name)) {
-			bail!("'{full_name}' is currently skipped. Run 'gitkeep unskip {full_name}' first.");
-		}
+		// A leftover exclusion for an account that's no longer tracked means nothing; drop it.
+		config.include_repo(&full_name);
 		config.pin_repo_with_options(&full_name, Some(id), submodules);
 		println!("Now tracking {full_name}.");
-		newly_pinned.push(full_name);
+		added.pinned.push(full_name);
+		changed = true;
 	}
-	if !newly_pinned.is_empty() {
+	if changed {
 		config.save()?;
 	}
-	Ok(newly_pinned)
+	Ok(added)
 }
 
-pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
+fn parse_repo_arg(s: &str) -> Result<(&str, &str)> {
+	match s.split_once('/') {
+		Some((user, name)) if !user.is_empty() && !name.is_empty() && !name.contains('/') => Ok((user, name)),
+		_ => bail!("'{s}' is not in user/repo format"),
+	}
+}
+
+pub async fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	let mut config = Config::load()?;
 	let mut changed = false;
 	let archive_root = config.archive_dir()?;
 	for target in users {
 		if target.contains('/') {
-			if config.unpin_repo(target) {
-				println!("No longer tracking {target}.");
+			if remove_repo(&mut config, &archive_root, target, delete_dir, yes).await? {
 				changed = true;
-				if delete_dir {
-					let Some((user, name)) = target.split_once('/') else { continue };
-					let repo_dir = archive_root.join(user).join(name);
-					if repo_dir.exists() {
-						println!("Deleting {}...", repo_dir.display());
-						fs::remove_dir_all(&repo_dir)?;
-					}
-				}
-			} else {
-				println!("Not tracking '{target}'.");
 			}
 		} else if let Some(canonical) =
 			config.track.iter().find(|u| u.name.eq_ignore_ascii_case(target)).map(|u| u.name.clone())
 		{
 			if config.remove_user(target) {
 				changed = true;
+				config.remove_exclusions_for_user(&canonical);
 				let user_dir = archive_root.join(&canonical);
 				if user_dir.exists() {
 					let should_delete = if delete_dir || yes {
@@ -120,7 +127,7 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 			// Not a tracked user — but individually-pinned repos under this user may exist.
 			let matching = config.pinned_repos_for_user(target);
 			if matching.is_empty() {
-				if let Some(dir) = find_orphaned_dir(&archive_root, target)? {
+				if let Some(dir) = find_dir_ignoring_case(&archive_root, target)? {
 					println!("'{target}' is not tracked, but a local archive exists at {}.", dir.display());
 					let should_delete = if delete_dir || yes { true } else { confirm("Delete it?", false)? };
 					if should_delete {
@@ -176,17 +183,84 @@ pub fn remove(users: &[String], delete_dir: bool, yes: bool) -> Result<()> {
 	Ok(())
 }
 
-/// Looks for a top-level directory under the archive root matching `name` (case-insensitively,
-/// since GitHub usernames aren't case-sensitive but directory lookups on most filesystems are).
-/// Used to spot a leftover archive for a user that was removed without `--delete`.
-fn find_orphaned_dir(archive_root: &Path, name: &str) -> Result<Option<PathBuf>> {
-	if !archive_root.is_dir() {
+/// Handles `gitkeep remove user/repo`: unpins an individually tracked repo, or excludes a repo
+/// under a fully tracked account. Returns `true` if the config changed.
+async fn remove_repo(
+	config: &mut Config,
+	archive_root: &Path,
+	target: &str,
+	delete_dir: bool,
+	yes: bool,
+) -> Result<bool> {
+	if config.unpin_repo(target) {
+		println!("No longer tracking {target}.");
+		if delete_dir {
+			let (user, name) = parse_repo_arg(target)?;
+			let repo_dir = archive_root.join(user).join(name);
+			if repo_dir.exists() {
+				println!("Deleting {}...", repo_dir.display());
+				fs::remove_dir_all(&repo_dir)?;
+			}
+		}
+		return Ok(true);
+	}
+	let (user, _) = parse_repo_arg(target)?;
+	let Some(owner) = config.track.iter().find(|u| u.name.eq_ignore_ascii_case(user)).map(|u| u.name.clone()) else {
+		println!("Not tracking '{target}'.");
+		return Ok(false);
+	};
+	exclude_repo(config, archive_root, &owner, target, delete_dir || yes).await
+}
+
+/// Removes a single repo under the fully tracked account `owner` by excluding it from syncs, then
+/// offers to delete its local copy. Returns `true` if the config changed.
+async fn exclude_repo(
+	config: &mut Config,
+	archive_root: &Path,
+	owner: &str,
+	target: &str,
+	delete: bool,
+) -> Result<bool> {
+	let (_, name) = parse_repo_arg(target)?;
+	let local_dir = find_dir_ignoring_case(&archive_root.join(owner), name)?;
+	// Prefer names we already know over a GitHub lookup, so repos deleted upstream can still be removed.
+	let full_name = if let Some(dir) = &local_dir {
+		format!("{owner}/{}", dir.file_name().map_or_else(|| name.into(), |n| n.to_string_lossy()))
+	} else if let Some(existing) = config.excluded.iter().find(|r| r.eq_ignore_ascii_case(target)) {
+		existing.clone()
+	} else {
+		let Ok(repo) = config.build_client()?.repos(owner, name).get().await else {
+			println!("'{target}' does not exist on GitHub.");
+			return Ok(false);
+		};
+		repo.full_name.unwrap_or_else(|| format!("{owner}/{name}"))
+	};
+	let changed = config.exclude_repo(&full_name);
+	if changed {
+		println!("{full_name} will no longer be synced.");
+	} else {
+		println!("Already removed {full_name}.");
+	}
+	if let Some(dir) = local_dir
+		&& (delete || confirm(&format!("Delete local archive for {full_name}?"), false)?)
+	{
+		println!("Deleting {}...", dir.display());
+		fs::remove_dir_all(&dir)?;
+	}
+	Ok(changed)
+}
+
+/// Looks for a directory directly under `parent` matching `name` (case-insensitively, since GitHub
+/// names aren't case-sensitive but directory lookups on most filesystems are). Used to find the
+/// local copy of an account or repo being removed.
+fn find_dir_ignoring_case(parent: &Path, name: &str) -> Result<Option<PathBuf>> {
+	if !parent.is_dir() {
 		return Ok(None);
 	}
-	// Scan instead of checking `archive_root.join(name)` directly: on case-insensitive filesystems that
+	// Scan instead of checking `parent.join(name)` directly: on case-insensitive filesystems that
 	// would succeed with the caller's casing rather than the directory's real name.
 	let mut fallback = None;
-	for entry in fs::read_dir(archive_root)? {
+	for entry in fs::read_dir(parent)? {
 		let entry = entry?;
 		if !entry.file_type()?.is_dir() {
 			continue;
@@ -203,7 +277,7 @@ fn find_orphaned_dir(archive_root: &Path, name: &str) -> Result<Option<PathBuf>>
 	Ok(fallback)
 }
 
-fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
+fn format_list(config: &Config) -> String {
 	let mut out = String::new();
 	if config.track.is_empty() && config.pinned.is_empty() {
 		return "No users tracked. Use 'gitkeep add <username>' to start.\n".to_string();
@@ -243,23 +317,17 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 			let _ = writeln!(out, "  {}{}", repo.full_name, suffix);
 		}
 	}
-	if !config.skipped.is_empty() {
-		let mut sorted: Vec<&String> = config
-			.skipped
-			.iter()
-			.filter(|r| {
-				archive_dir
-					.as_ref()
-					.and_then(|d| r.split_once('/').map(|(u, n)| d.join(u).join(n).exists()))
-					.unwrap_or(true)
-			})
-			.collect();
-		sorted.sort();
-		if !sorted.is_empty() {
-			let _ = writeln!(out, "\nSkipped repos ({} total):", sorted.len());
-			for repo in sorted {
-				let _ = writeln!(out, "  {repo}");
-			}
+	if !config.excluded.is_empty() {
+		let mut sorted: Vec<&String> = config.excluded.iter().collect();
+		sorted.sort_by_key(|r| r.to_lowercase());
+		let _ = writeln!(
+			out,
+			"
+Removed repos ({} total):",
+			sorted.len()
+		);
+		for repo in sorted {
+			let _ = writeln!(out, "  {repo}");
 		}
 	}
 	out
@@ -267,8 +335,7 @@ fn format_list(config: &Config, archive_dir: Option<&Path>) -> String {
 
 pub fn list() -> Result<()> {
 	let config = Config::load()?;
-	let archive_dir = config.archive_dir().ok();
-	print!("{}", format_list(&config, archive_dir.as_deref()));
+	print!("{}", format_list(&config));
 	Ok(())
 }
 
@@ -291,42 +358,97 @@ mod tests {
 	}
 
 	#[test]
-	fn find_orphaned_dir_matches_exact_case() {
+	fn parse_repo_arg_valid() {
+		assert_eq!(parse_repo_arg("alice/my-repo").unwrap(), ("alice", "my-repo"));
+	}
+
+	#[test]
+	fn parse_repo_arg_rejects_malformed() {
+		for bad in ["noslash", "a/b/c", "/repo", "user/"] {
+			assert!(parse_repo_arg(bad).is_err(), "{bad} should be rejected");
+		}
+	}
+
+	#[tokio::test]
+	async fn exclude_repo_uses_local_casing_and_deletes() {
+		let root = temp_dir();
+		fs::create_dir_all(root.join("Alice").join("BigRepo")).unwrap();
+		let mut config = Config::default();
+		config.add_user("Alice", false, false, None);
+		assert!(exclude_repo(&mut config, &root, "Alice", "alice/bigrepo", true).await.unwrap());
+		assert!(config.excluded.contains("Alice/BigRepo"));
+		assert!(!root.join("Alice").join("BigRepo").exists());
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn exclude_repo_already_excluded_is_unchanged() {
+		let root = temp_dir();
+		let mut config = Config::default();
+		config.add_user("alice", false, false, None);
+		config.exclude_repo("alice/big");
+		assert!(!exclude_repo(&mut config, &root, "alice", "alice/big", true).await.unwrap());
+		assert_eq!(config.excluded.len(), 1);
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn remove_repo_ignores_untracked_owner() {
+		let root = temp_dir();
+		let mut config = Config::default();
+		assert!(!remove_repo(&mut config, &root, "bob/repo", true, true).await.unwrap());
+		assert!(config.excluded.is_empty());
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[tokio::test]
+	async fn remove_repo_unpins_pinned_repo_instead_of_excluding() {
+		let root = temp_dir();
+		let mut config = Config::default();
+		config.pin_repo_with_options("bob/repo", None, None);
+		assert!(remove_repo(&mut config, &root, "bob/repo", false, true).await.unwrap());
+		assert!(!config.is_pinned("bob/repo"));
+		assert!(config.excluded.is_empty());
+		fs::remove_dir_all(&root).unwrap();
+	}
+
+	#[test]
+	fn find_dir_ignoring_case_matches_exact_case() {
 		let root = temp_dir();
 		fs::create_dir(root.join("alice")).unwrap();
-		let found = find_orphaned_dir(&root, "alice").unwrap();
+		let found = find_dir_ignoring_case(&root, "alice").unwrap();
 		assert_eq!(found, Some(root.join("alice")));
 		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[test]
-	fn find_orphaned_dir_matches_case_insensitively() {
+	fn find_dir_ignoring_case_matches_case_insensitively() {
 		let root = temp_dir();
 		fs::create_dir(root.join("Alice")).unwrap();
-		let found = find_orphaned_dir(&root, "alice").unwrap();
+		let found = find_dir_ignoring_case(&root, "alice").unwrap();
 		assert_eq!(found, Some(root.join("Alice")));
 		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[test]
-	fn find_orphaned_dir_none_when_missing() {
+	fn find_dir_ignoring_case_none_when_missing() {
 		let root = temp_dir();
-		let found = find_orphaned_dir(&root, "alice").unwrap();
+		let found = find_dir_ignoring_case(&root, "alice").unwrap();
 		assert_eq!(found, None);
 		fs::remove_dir_all(&root).unwrap();
 	}
 
 	#[test]
-	fn find_orphaned_dir_none_when_archive_root_missing() {
+	fn find_dir_ignoring_case_none_when_archive_root_missing() {
 		let root = temp_dir().join("does-not-exist");
-		let found = find_orphaned_dir(&root, "alice").unwrap();
+		let found = find_dir_ignoring_case(&root, "alice").unwrap();
 		assert_eq!(found, None);
 	}
 
 	#[test]
 	fn list_empty_state_shows_hint() {
 		let config = Config::default();
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("gitkeep add"), "got: {out}");
 	}
 
@@ -334,7 +456,7 @@ mod tests {
 	fn list_pinned_only_does_not_show_hint() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("alice/repo", None, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(!out.contains("gitkeep add"), "got: {out}");
 	}
 
@@ -342,7 +464,7 @@ mod tests {
 	fn list_shows_tracked_users() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("alice"), "got: {out}");
 	}
 
@@ -350,7 +472,7 @@ mod tests {
 	fn list_shows_forks_tag() {
 		let mut config = Config::default();
 		config.add_user("alice", true, false, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("forks"), "got: {out}");
 	}
 
@@ -358,35 +480,35 @@ mod tests {
 	fn list_shows_frozen_tag() {
 		let mut config = Config::default();
 		config.add_user("alice", false, true, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("frozen"), "got: {out}");
 	}
 
 	#[test]
-	fn list_omits_skipped_section_when_none() {
+	fn list_omits_removed_section_when_none() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		let out = format_list(&config, None);
-		assert!(!out.to_lowercase().contains("skipped"), "got: {out}");
+		let out = format_list(&config);
+		assert!(!out.to_lowercase().contains("removed"), "got: {out}");
 	}
 
 	#[test]
-	fn list_shows_skipped_section_when_present() {
+	fn list_shows_removed_section_when_present() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		config.skip_repo("alice/noisy");
-		let out = format_list(&config, None);
+		config.exclude_repo("alice/noisy");
+		let out = format_list(&config);
 		assert!(out.contains("alice/noisy"), "got: {out}");
-		assert!(out.to_lowercase().contains("skipped"), "got: {out}");
+		assert!(out.to_lowercase().contains("removed"), "got: {out}");
 	}
 
 	#[test]
-	fn list_skipped_repos_are_sorted() {
+	fn list_removed_repos_are_sorted() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		config.skip_repo("alice/zzz");
-		config.skip_repo("alice/aaa");
-		let out = format_list(&config, None);
+		config.exclude_repo("alice/zzz");
+		config.exclude_repo("alice/aaa");
+		let out = format_list(&config);
 		let aaa_pos = out.find("alice/aaa").unwrap();
 		let zzz_pos = out.find("alice/zzz").unwrap();
 		assert!(aaa_pos < zzz_pos, "got: {out}");
@@ -396,7 +518,7 @@ mod tests {
 	fn list_shows_pinned_section() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("rust-lang/mdBook", None, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("rust-lang/mdBook"), "got: {out}");
 		assert!(out.contains("Repos ("), "got: {out}");
 	}
@@ -405,7 +527,7 @@ mod tests {
 	fn list_shows_submodules_tag_when_enabled() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, Some(true));
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("submodules"), "got: {out}");
 	}
 
@@ -413,7 +535,7 @@ mod tests {
 	fn list_shows_no_submodules_tag_when_explicitly_disabled() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, Some(false));
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("no-submodules"), "got: {out}");
 	}
 
@@ -421,7 +543,7 @@ mod tests {
 	fn list_omits_submodules_tag_when_unset() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(!out.contains("submodules"), "got: {out}");
 	}
 
@@ -429,7 +551,7 @@ mod tests {
 	fn list_shows_submodules_tag_for_pinned_repo() {
 		let mut config = Config::default();
 		config.pin_repo_with_options("alice/repo", None, Some(true));
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(out.contains("alice/repo"), "got: {out}");
 		assert!(out.contains("submodules"), "got: {out}");
 	}
@@ -439,7 +561,7 @@ mod tests {
 		let mut config = Config::default();
 		config.pin_repo_with_options("rust-lang/zzz", None, None);
 		config.pin_repo_with_options("rust-lang/aaa", None, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		let aaa_pos = out.find("rust-lang/aaa").unwrap();
 		let zzz_pos = out.find("rust-lang/zzz").unwrap();
 		assert!(aaa_pos < zzz_pos, "got: {out}");
@@ -449,7 +571,7 @@ mod tests {
 	fn list_omits_pinned_section_when_none() {
 		let mut config = Config::default();
 		config.add_user("alice", false, false, None);
-		let out = format_list(&config, None);
+		let out = format_list(&config);
 		assert!(!out.contains("Repos ("), "got: {out}");
 	}
 

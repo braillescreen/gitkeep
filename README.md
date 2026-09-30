@@ -50,7 +50,7 @@ Configure the archive directory, whether to use SSH or HTTPS clone URLs, whether
 Authenticate with a GitHub personal access token. Opens the token creation page in your browser, validates the token, and saves it to config. Also offers to add your own account to the tracked list (defaults to yes).
 
 ### `add <TARGET>...`
-Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo).
+Add one or more GitHub users, orgs, or individual repos to the archive list and clone them immediately. A target is either a plain username/org (tracks the whole account) or `user/repo` (pins just that one repo). Adding `user/repo` for a repo you removed from a tracked account starts syncing it again.
 
 | Flag | Description |
 |------|-------------|
@@ -75,25 +75,8 @@ Sync all tracked accounts. Passing usernames adds them to the tracked list and s
 
 A sync that fails to pull an existing repo because it no longer matches what's on GitHub (e.g. the `owner/name` was deleted and recreated as a different repo) automatically deletes the stale local clone and re-clones it.
 
-### `skip <user/repo>...`
-Exclude a specific repo from future syncs. Accepts `user/repo` format.
-
-| Flag | Description |
-|------|-------------|
-| `-d, --delete` | Also delete the local archive directory for these repos |
-
-### `unskip <user/repo>...`
-Re-enable a previously skipped repo.
-
-### `prune`
-Delete the local archive directories for all currently skipped repos, after confirmation.
-
-| Flag | Description |
-|------|-------------|
-| `-y, --yes` | Skip the confirmation prompt |
-
 ### `list`  _(alias: `ls`)_
-Show all tracked users and orgs, including any per-account flags and the list of skipped repos.
+Show all tracked users and orgs, including any per-account flags, individually tracked repos, and repos removed from tracked accounts.
 
 ### `size`  _(alias: `du`)_
 Show the on-disk size of the archive, broken down per account.
@@ -103,7 +86,7 @@ Show the on-disk size of the archive, broken down per account.
 | `-s, --format <FORMAT>` | Unit format: `decimal` (kB/MB/GB, base 1000), `binary` (KiB/MiB/GiB, base 1024, default), or `raw` (exact byte count) |
 
 ### `remove <TARGET>...`  _(alias: `rm`)_
-Stop tracking one or more users, orgs, or individually pinned repos. Accepts either a plain username/org or `user/repo`. Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
+Stop tracking one or more users, orgs, or repos. Accepts either a plain username/org or `user/repo`. A `user/repo` target can be an individually pinned repo or a single repo under a fully tracked account; the latter is left out of future syncs while the rest of the account keeps syncing (run `gitkeep add user/repo` to undo). Prompts to delete the local archive directory; pass `--delete` to skip the prompt. If a target isn't tracked as a full user but has individually pinned repos under it, prompts to remove those too.
 
 | Flag | Description |
 |------|-------------|

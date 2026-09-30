@@ -31,7 +31,7 @@ pub fn run() -> Result<()> {
 		submodules,
 		no_sync: !clone_on_add,
 		track: existing.track,
-		skipped: existing.skipped,
+		excluded: existing.excluded,
 		pinned: existing.pinned,
 	};
 	config.save()?;

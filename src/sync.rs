@@ -38,7 +38,6 @@ struct Totals {
 	pulled_updated: usize,
 	pulled_up_to_date: usize,
 	cloned: usize,
-	skipped: usize,
 	excluded: usize,
 	failed: usize,
 	updated_repos: Vec<String>,
@@ -137,7 +136,7 @@ async fn sync_all(
 	let mut state = State::load()?;
 	let legacy = state.drain_legacy_skipped();
 	if !legacy.is_empty() {
-		config.skipped.extend(legacy);
+		config.excluded.extend(legacy);
 	}
 	let mut totals = Totals::default();
 	let ctx = SyncContext { client: &client, archive_dir: &archive_dir, opts, verbosity };
@@ -173,8 +172,7 @@ async fn sync_all(
 }
 
 fn build_summary(totals: &Totals) -> String {
-	let total_processed =
-		totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.failed + totals.skipped;
+	let total_processed = totals.pulled_updated + totals.pulled_up_to_date + totals.cloned + totals.failed;
 	if total_processed == 0 {
 		return if totals.excluded > 0 { "Done.".to_string() } else { "Nothing to do.".to_string() };
 	}
@@ -187,9 +185,6 @@ fn build_summary(totals: &Totals) -> String {
 	}
 	if totals.pulled_up_to_date > 0 {
 		parts.push(format!("{} up to date", plural(totals.pulled_up_to_date, "repo", "repos")));
-	}
-	if totals.skipped > 0 {
-		parts.push(format!("{} skipped", plural(totals.skipped, "repo", "repos")));
 	}
 	if totals.failed > 0 {
 		parts.push(format!("{} failed", plural(totals.failed, "repo", "repos")));
@@ -295,22 +290,6 @@ mod tests {
 		assert!(!indicates_repo_identity_mismatch(
 			b"fatal: unable to access 'https://github.com/x/y.git': Could not resolve host"
 		));
-	}
-
-	fn totals(skipped: usize) -> Totals {
-		Totals { skipped, ..Totals::default() }
-	}
-
-	#[test]
-	fn summary_shows_user_skipped_count() {
-		let s = build_summary(&totals(2));
-		assert!(s.contains("2 repos skipped"), "got: {s}");
-	}
-
-	#[test]
-	fn summary_not_nothing_to_do_when_only_skipped() {
-		let s = build_summary(&totals(1));
-		assert_ne!(s, "Nothing to do.");
 	}
 
 	#[test]
@@ -537,8 +516,8 @@ fn sync_repo_list(
 	for repo in repos {
 		let name = &repo.name;
 		let full_name = repo.full_name.as_deref().unwrap_or(name.as_str());
-		if config.is_skipped(full_name) {
-			sync_state.totals.skipped += 1;
+		if config.is_excluded(full_name) {
+			sync_state.totals.excluded += 1;
 			continue;
 		}
 		if repo.fork.unwrap_or(false) && !include_forks {

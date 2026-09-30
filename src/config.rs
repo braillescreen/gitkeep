@@ -32,8 +32,10 @@ pub struct Config {
 	pub no_sync: bool,
 	#[serde(default)]
 	pub track: Vec<TrackedUser>,
-	#[serde(default, skip_serializing_if = "HashSet::is_empty")]
-	pub skipped: HashSet<String>,
+	/// Repos under a fully tracked account that were removed with `gitkeep remove user/repo` and
+	/// are left out of syncs. Read from the pre-0.3.0 `skipped` key too.
+	#[serde(default, alias = "skipped", skip_serializing_if = "HashSet::is_empty")]
+	pub excluded: HashSet<String>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub pinned: Vec<PinnedRepo>,
 }
@@ -212,18 +214,29 @@ impl Config {
 		self.track.sort_by_key(|a| a.name.to_lowercase());
 	}
 
-	/// Returns `true` if this is a new skip, `false` if already skipped.
-	pub fn skip_repo(&mut self, full_name: &str) -> bool {
-		self.skipped.insert(full_name.to_string())
+	/// Returns `true` if this is a new exclusion, `false` if the repo was already excluded.
+	pub fn exclude_repo(&mut self, full_name: &str) -> bool {
+		if self.is_excluded(full_name) {
+			return false;
+		}
+		self.excluded.insert(full_name.to_string())
 	}
 
-	/// Returns `true` if the repo was skipped and is now removed, `false` if it wasn't skipped.
-	pub fn unskip_repo(&mut self, full_name: &str) -> bool {
-		self.skipped.remove(full_name)
+	/// Removes an exclusion (case-insensitively) and returns the stored name, or `None` if the
+	/// repo wasn't excluded.
+	pub fn include_repo(&mut self, full_name: &str) -> Option<String> {
+		let stored = self.excluded.iter().find(|r| r.eq_ignore_ascii_case(full_name))?.clone();
+		self.excluded.remove(&stored);
+		Some(stored)
 	}
 
-	pub fn is_skipped(&self, full_name: &str) -> bool {
-		self.skipped.contains(full_name)
+	pub fn is_excluded(&self, full_name: &str) -> bool {
+		self.excluded.iter().any(|r| r.eq_ignore_ascii_case(full_name))
+	}
+
+	/// Drops every exclusion under `user` (case-insensitive), e.g. once the whole account is removed.
+	pub fn remove_exclusions_for_user(&mut self, user: &str) {
+		self.excluded.retain(|r| !r.split_once('/').is_some_and(|(u, _)| u.eq_ignore_ascii_case(user)));
 	}
 
 	/// Pins a repo, optionally recording its stable GitHub id (used to re-resolve it after a
@@ -348,57 +361,71 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn config_skip_repo_marks_as_skipped() {
+	fn exclude_repo_marks_as_excluded() {
 		let mut config = Config::default();
-		config.skip_repo("user/repo");
-		assert!(config.is_skipped("user/repo"));
+		config.exclude_repo("user/repo");
+		assert!(config.is_excluded("user/repo"));
 	}
 
 	#[test]
-	fn config_skip_repo_returns_true_for_new_skip() {
+	fn exclude_repo_returns_true_for_new_exclusion() {
 		let mut config = Config::default();
-		assert!(config.skip_repo("user/repo"));
+		assert!(config.exclude_repo("user/repo"));
 	}
 
 	#[test]
-	fn config_skip_repo_returns_false_for_duplicate() {
+	fn exclude_repo_returns_false_for_duplicate_in_any_case() {
 		let mut config = Config::default();
-		config.skip_repo("user/repo");
-		assert!(!config.skip_repo("user/repo"));
+		config.exclude_repo("user/repo");
+		assert!(!config.exclude_repo("User/Repo"));
+		assert_eq!(config.excluded.len(), 1);
 	}
 
 	#[test]
-	fn config_unskip_repo_returns_true_when_was_skipped() {
+	fn exclude_repo_does_not_affect_other_repos() {
 		let mut config = Config::default();
-		config.skip_repo("user/repo");
-		assert!(config.unskip_repo("user/repo"));
+		config.exclude_repo("user/repo");
+		assert!(!config.is_excluded("user/other"));
 	}
 
 	#[test]
-	fn config_unskip_repo_returns_false_when_not_skipped() {
+	fn is_excluded_ignores_case() {
 		let mut config = Config::default();
-		assert!(!config.unskip_repo("user/repo"));
+		config.exclude_repo("User/Repo");
+		assert!(config.is_excluded("user/repo"));
 	}
 
 	#[test]
-	fn config_skip_repo_does_not_affect_other_repos() {
+	fn include_repo_returns_stored_name() {
 		let mut config = Config::default();
-		config.skip_repo("user/repo");
-		assert!(!config.is_skipped("user/other"));
+		config.exclude_repo("User/Repo");
+		assert_eq!(config.include_repo("user/repo").as_deref(), Some("User/Repo"));
+		assert!(!config.is_excluded("User/Repo"));
 	}
 
 	#[test]
-	fn config_unskip_repo_clears_skip() {
+	fn include_repo_returns_none_when_not_excluded() {
 		let mut config = Config::default();
-		config.skip_repo("user/repo");
-		config.unskip_repo("user/repo");
-		assert!(!config.is_skipped("user/repo"));
+		assert!(config.include_repo("user/repo").is_none());
 	}
 
 	#[test]
-	fn config_is_skipped_false_for_unknown() {
-		let config = Config::default();
-		assert!(!config.is_skipped("user/repo"));
+	fn remove_exclusions_for_user_only_touches_that_user() {
+		let mut config = Config::default();
+		config.exclude_repo("Alice/a");
+		config.exclude_repo("alice/b");
+		config.exclude_repo("bob/c");
+		config.remove_exclusions_for_user("alice");
+		assert!(!config.is_excluded("alice/a"));
+		assert!(!config.is_excluded("alice/b"));
+		assert!(config.is_excluded("bob/c"));
+	}
+
+	#[test]
+	fn legacy_skipped_key_loads_as_excluded() {
+		let config: Config = from_str("skipped = [\"user/repo\"]").unwrap();
+		assert!(config.is_excluded("user/repo"));
+		assert!(to_string_pretty(&config).unwrap().contains("excluded"));
 	}
 
 	#[test]

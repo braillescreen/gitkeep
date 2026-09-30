@@ -10,7 +10,6 @@ mod config;
 mod init;
 mod login;
 mod size;
-mod skip;
 mod sync;
 mod track;
 mod utils;
@@ -66,17 +65,17 @@ async fn main() -> Result<()> {
 			}
 			if !repos.is_empty() {
 				let client = config.build_client()?;
-				let newly_pinned = track::add_pinned(&repos, &client, submodules_override).await?;
+				let added = track::add_pinned(&repos, &client, submodules_override).await?;
 				if !no_sync {
-					sync::run_pinned(&newly_pinned).await?;
+					if !added.restored_owners.is_empty() {
+						sync::run_for(&added.restored_owners, sync::SyncOptions::default()).await?;
+					}
+					sync::run_pinned(&added.pinned).await?;
 				}
 			}
 			Ok(())
 		}
-		Commands::Skip { repos, delete } => skip::add(&repos, delete).await,
-		Commands::Prune { yes } => skip::prune(yes),
-		Commands::Unskip { repos } => skip::remove(&repos),
-		Commands::Remove { users, delete, yes } => track::remove(&users, delete, yes),
+		Commands::Remove { users, delete, yes } => track::remove(&users, delete, yes).await,
 		Commands::List => track::list(),
 		Commands::Size { format } => size::run(format),
 		Commands::Sync { users, forks, submodules, pull_only, new_only, quiet, verbose } => {

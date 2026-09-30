@@ -38,34 +38,15 @@ pub enum Commands {
 		#[arg(long, conflicts_with = "no_sync")]
 		sync: bool,
 	},
-	/// Skip a specific repo during sync (use user/repo format)
-	Skip {
-		#[arg(value_name = "REPO", required = true)]
-		repos: Vec<String>,
-		/// Also delete the local archive directory for these repos
-		#[arg(short, long)]
-		delete: bool,
-	},
-	/// Re-enable a previously skipped repo
-	Unskip {
-		#[arg(value_name = "REPO", required = true)]
-		repos: Vec<String>,
-	},
-	/// Stop tracking one or more users, orgs, or pinned repos (user/repo)
+	/// Stop tracking users, orgs, or repos (user/repo), including single repos of a tracked account
 	#[command(alias = "rm")]
 	Remove {
 		#[arg(value_name = "TARGET", required = true)]
 		users: Vec<String>,
-		/// Also delete the local archive directory for these users
+		/// Also delete the local archive directory for these targets
 		#[arg(short, long)]
 		delete: bool,
 		/// Skip all confirmation prompts, assuming "yes"
-		#[arg(short, long)]
-		yes: bool,
-	},
-	/// Delete local copies of all skipped repos
-	Prune {
-		/// Skip the confirmation prompt
 		#[arg(short, long)]
 		yes: bool,
 	},
